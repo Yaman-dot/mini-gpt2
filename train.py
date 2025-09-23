@@ -19,3 +19,10 @@ class GPT(nn.Module):
     def __init__(self):
         super().__init__()
         self.config = Config()
+        self.transformer = nn.ModuleDict(dict(
+            wte = nn.Embedding(self.config.vocab_size, self.config.n_embd),
+            wpe = nn.Embedding(self.config.block_size, self.config.n_embd),
+            h = nn.ModuleList([Block(self.config) for _ in range(self.config.n_layers)]),
+            ln_f = nn.LayerNorm(self.config.n_embd),
+        ))
+        self.lm_head = nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
