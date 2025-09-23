@@ -36,7 +36,7 @@ pip install torch
 Initialize the model:
 
 ```bash
-from model import GPT
+from model import GPT #future package structure will have GPT be in its own file
 model = GPT()
 ```
 
