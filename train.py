@@ -4,7 +4,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
-
+class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.gelu = nn.GELU(approximate='tanh') #use the approximate versionb because OG GPT 2 used it, if not recreating GPT2, use the exact version nn.GELU()
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -14,7 +24,7 @@ class Block(nn.Module):
         self.mlp = MLP(config)
     def forward(self, x):
         x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        x = x + self.mlp(self.ln2(x)) #FFN
         return x
 @dataclass
 class Config:
