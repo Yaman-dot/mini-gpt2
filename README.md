@@ -28,7 +28,7 @@ Install dependencies:
 
 ```bash
 pip install torch
-
+pip install transformers
 ```
 
 ## Usage
