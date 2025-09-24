@@ -27,8 +27,7 @@ git clone https://github.com/Yaman-dot/mini-gpt2.git
 Install dependencies:
 
 ```bash
-pip install torch
-pip install transformers
+pip install torch transformers tiktoken
 ```
 
 ## Usage
@@ -37,11 +36,30 @@ Initialize the model:
 
 ```bash
 from train import GPT #future package structure will have GPT be in its own file
-model = GPT()
+model = GPT.load_pretrained_model("gpt2")  # default 124M GPT-2
+model.to('cuda')
+model.eval()
 ```
 
-Load pretrained weights (to be implemented).
+## Interactive chat
 
+```bash
+from main import reply
+
+conversation = "User: Hello!\nModel: Hello!\n"
+
+while True:
+    user_input = input("User: ")
+    conversation += f"User: {user_input}\nModel:"
+
+    output = reply(conversation, model, max_new_tokens=50)
+    print("Model:", output)
+
+    conversation += output + "\n"
+```
+
+The model continues dialogue after Model:, without repeating the prompt.
+Supports multi-turn conversation within the context window (block_size=1024).
 
 ## Configuration
 
@@ -57,7 +75,7 @@ n_embd: 768
 
 ## TODO
 
-Load pretrained GPT-2 weights for full functionality
+Add training loop
 
 ## Contributing
 
