@@ -6,11 +6,11 @@ import math
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        assert config.n_embd % config.n_heads == 0
+        assert config.n_embd % config.n_head == 0
         ##Key,Query,Value projects for all heads but linear and in batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.n_head = config.n_heads
+        self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
     def forward(self, x):
@@ -33,7 +33,7 @@ class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
-        self.gelu = nn.GELU(approximate='tanh') #use the approximate versionb because OG GPT 2 used it, if not recreating GPT2, use the exact version nn.GELU()
+        self.gelu = nn.GELU(approximate='tanh') #use the approximate version because OG GPT 2 used it, If I were not faithfully recreating GPT 2, I would have used the exact version
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
     def forward(self, x):
         x = self.c_fc(x)
@@ -43,31 +43,83 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln1 = nn.LayerNorm(config.n_embd)
+        self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
-        self.ln2 = nn.LayerNorm(config.n_embd)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x)) #FFN
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x)) #FFN
         return x
 @dataclass
 class Config:
-    block_size: int = 256
-    vocab_size: int = 65
-    n_layers: int = 6
-    n_heads: int = 6
-    n_embd: int = 384
+    block_size: int = 1024
+    vocab_size: int = 50257
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
 
 
 class GPT(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
-        self.config = Config()
+        assert config.vocab_size is not None
+        assert config.block_size is not None
+        self.config = config
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(self.config.vocab_size, self.config.n_embd),
             wpe = nn.Embedding(self.config.block_size, self.config.n_embd),
-            h = nn.ModuleList([Block(self.config) for _ in range(self.config.n_layers)]),
+            h = nn.ModuleList([Block(self.config) for _ in range(self.config.n_layer)]),
             ln_f = nn.LayerNorm(self.config.n_embd),
         ))
         self.lm_head = nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
+
+    @classmethod
+    def load_pretrained_model(cls, model_type):
+        assert model_type in ['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl']
+        from transformers import GPT2LMHeadModel
+        gpt2_model = GPT2LMHeadModel.from_pretrained(model_type)
+        state_dict = gpt2_model.state_dict()
+        config_args = {
+            "gpt2":         dict(n_layer=12, n_head=12, n_embd=768),
+            "gpt2-medium":  dict(n_layer=24, n_head=16, n_embd=1024),
+            "gpt2-large":   dict(n_layer=36, n_head=20, n_embd=1280),
+            "gpt2-xl":      dict(n_layer=48, n_head=25, n_embd=1600),
+        }[model_type]
+        print(config_args)
+        
+        config_args['block_size'] = 1024
+        config_args['vocab_size'] = 50257
+        config = Config(**config_args)
+        model = GPT(config)
+        #model.load_state_dict(state_dict)
+        sd = model.state_dict()
+        sd_keys = sd.keys()
+        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
+
+        
+        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        sd_hf = model_hf.state_dict()
+        
+        sd_keys_hf = sd_hf.keys()
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask (buffer)
+        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
+        assert len(sd_keys) == len(sd_keys_hf), f"Mismatch in number of keys: {len(sd_keys)} vs {len(sd_keys_hf)}"
+        for k in sd_keys_hf:
+            if any(k.endswith(w) for w in transposed):
+                # special treatment for the Conv1D weights we need to transpose
+                assert sd_hf[k].shape[::-1] == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k].t())
+            else:
+                # vanilla copy over the other parameters
+                assert sd_hf[k].shape == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k])
+        return model
+
+
+
+model = GPT.load_pretrained_model('gpt2')
+print("Model loaded successfully.")
