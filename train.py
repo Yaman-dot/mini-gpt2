@@ -74,7 +74,7 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward {T}, model block size is exhausted."
         
@@ -86,7 +86,10 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
     def generate(self, idx, max_new_tokens=50, top_k=50):
         for _ in range(max_new_tokens):
             logits = self(idx)              # (B, T, vocab_size)
@@ -142,6 +145,61 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
         return model
     
+import tiktoken
+class DataPreprocessor:
+    def __init__(self, file_path, B, T, train_ratio=0.9):
+        self.B = B
+        self.T = T
+        self.enc = tiktoken.get_encoding("gpt2")
+        self.tokens = self.encode_text(self.load_data(file_path))
+        
+        n = len(self.tokens)
+        split = int(train_ratio * n)
+        self.train_tokens = self.tokens[:split]
+        self.val_tokens = self.tokens[split:]
+        
+        self.current_position = 0
+        print(f"Loaded {n} tokens")
+        print(f"1 epoch = {n // (B*T)} batches")
+
+    def load_data(self, file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def encode_text(self, text):
+        return torch.tensor(self.enc.encode(text), dtype=torch.long)
+
+    def next_batch(self, split="train"):
+        data = self.train_tokens if split == "train" else self.val_tokens
+        start = self.current_position
+        end = start + self.B * self.T + 1
+        if end >= len(data):
+            self.current_position = 0
+            start, end = 0, self.B * self.T + 1
+        buf = data[start:end]
+        x = buf[:-1].view(self.B, self.T)
+        y = buf[1:].view(self.B, self.T)
+        self.current_position += self.B * self.T
+        return x, y
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+data = DataPreprocessor("datasets/moby_dick.txt", B=4, T=32)
+model = GPT(Config()).to(device)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for step in range(101):
+    x, y = data.next_batch(split="train")
+    x, y = x.to(device), y.to(device)
+
+    optimizer.zero_grad() #start with a zero gradient really important
+    logits, loss = model(x, y)
+    loss.backward() #this background adds to gradients. which is why we needed to zero the gradient
+    optimizer.step() #the step function updates the parameters and decreases the loss
+
+    if step % 10 == 0:
+        print(f"step {step}, loss {loss.item():.4f}")
+
 
 
 '''
