@@ -9,7 +9,9 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         ##Key,Query,Value projects for all heads but linear and in batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd) 
+        #output projection
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
@@ -35,6 +37,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu = nn.GELU(approximate='tanh') #use the approximate version because OG GPT 2 used it, If I were not faithfully recreating GPT 2, I would have used the exact version
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
@@ -80,7 +83,10 @@ class GPT(nn.Module):
         self.apply(self._init_weights)
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std = 0.02
+            if hasattr(module, "NANOGPT_SCALE_INIT"):
+                std = 1 / (2*self.config.n_layer)**-0.5 #The 2 is because that every layer in our transformer has 2 blocks that add to the residual pathway
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
