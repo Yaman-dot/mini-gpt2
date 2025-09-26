@@ -20,7 +20,7 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B,T,self.n_head,C // self.n_head).transpose(1,2) # (B,nh,T,hs) treats h as a batch same as k
         q = q.view(B,T,self.n_head,C // self.n_head).transpose(1,2) # (B,nh,T,hs)
         v = v.view(B,T,self.n_head,C // self.n_head).transpose(1,2) # (B,nh,T,hs)
-        
+
         #attention 
         att = (q @ k.transpose(-2,-1)) * (1.0 / math.sqrt(k.size(-1)))
         att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) #mask out future tokens
@@ -73,7 +73,9 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(self.config.n_embd),
         ))
         self.lm_head = nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
-
+        
+        #Weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
     def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward {T}, model block size is exhausted."
