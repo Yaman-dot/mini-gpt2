@@ -77,7 +77,7 @@ class GPT(nn.Module):
     def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward {T}, model block size is exhausted."
-        
+
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device).unsqueeze(0) # shape (T)
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (B,T,n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape  (T, n_embd)
@@ -146,18 +146,20 @@ class GPT(nn.Module):
         return model
     
 import tiktoken
+from tqdm import tqdm
+
 class DataPreprocessor:
     def __init__(self, file_path, B, T, train_ratio=0.9):
         self.B = B
         self.T = T
         self.enc = tiktoken.get_encoding("gpt2")
         self.tokens = self.encode_text(self.load_data(file_path))
-        
+
         n = len(self.tokens)
         split = int(train_ratio * n)
         self.train_tokens = self.tokens[:split]
         self.val_tokens = self.tokens[split:]
-        
+
         self.current_position = 0
         print(f"Loaded {n} tokens")
         print(f"1 epoch = {n // (B*T)} batches")
@@ -188,19 +190,30 @@ data = DataPreprocessor("datasets/moby_dick.txt", B=4, T=32)
 model = GPT(Config()).to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for step in range(101):
-    x, y = data.next_batch(split="train")
-    x, y = x.to(device), y.to(device)
+num_epochs = 5
+batches_per_epoch = len(data.train_tokens) // (data.B * data.T)
 
-    optimizer.zero_grad() #start with a zero gradient really important
-    logits, loss = model(x, y)
-    loss.backward() #this background adds to gradients. which is why we needed to zero the gradient
-    optimizer.step() #the step function updates the parameters and decreases the loss
+for epoch in range(1, num_epochs + 1):
+    epoch_loss = 0.0
 
-    if step % 10 == 0:
-        print(f"step {step}, loss {loss.item():.4f}")
+    # tqdm progress bar for each epoch
+    progress_bar = tqdm(range(batches_per_epoch), desc=f"Epoch {epoch}/{num_epochs}", leave=True)
 
+    for step in progress_bar:
+        x, y = data.next_batch(split="train")
+        x, y = x.to(device), y.to(device)
 
+        optimizer.zero_grad() #Zeros the gradiants, really important
+        logits, loss = model(x, y)
+        loss.backward() #Adds to the gradiants that were already zeroed. which is why zeroing is important.
+        optimizer.step() #Updates the parameters.
+        # accumulate loss for reporting
+        epoch_loss += loss.item()
+        # update progress bar with current batch loss
+        progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
+    # average epoch loss
+    avg_loss = epoch_loss / batches_per_epoch
+    print(f"Epoch {epoch} finished | Avg loss: {avg_loss:.4f}")
 
 '''
 model = GPT.load_pretrained_model('gpt2')
