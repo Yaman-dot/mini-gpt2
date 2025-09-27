@@ -113,8 +113,9 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
     def generate(self, idx, max_new_tokens=50, top_k=50):
+        self.eval()
         for _ in range(max_new_tokens):
-            logits = self(idx)              # (B, T, vocab_size)
+            logits, _ = self(idx)              # (B, T, vocab_size)
             logits = logits[:, -1, :]       # (B, vocab_size)
             probs = F.softmax(logits, dim=-1)
             top_probs, top_idx = torch.topk(probs, top_k, dim=-1)
@@ -178,9 +179,9 @@ class GPT(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_param)
         num_no_decay_params = sum(p.numel() for p in no_decay_param)
-        #print(f"num_decay_params: {num_decay_params}, num_no_decay_params: {num_no_decay_params}, total: {num_decay_params + num_no_decay_params}")
+        print(f"num_decay_params: {num_decay_params}, num_no_decay_params: {num_no_decay_params}, total: {num_decay_params + num_no_decay_params}")
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device.type == 'cuda'
+        use_fused = fused_available and device.type == 'cuda' #use fused if its available. Useful for 8bit optimizers, also faster
         print(f"Configuring AdamW optimizer with fused={use_fused} weight_decay={weight_decay}")
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
