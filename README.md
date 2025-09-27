@@ -11,6 +11,9 @@ This repository contains a faithful recreation of the GPT-2 model, including:
 - Feed-forward networks with GELU activation
 - Causal attention mechanism for autoregressive text generation
 - Epoch based training with batch sampling
+- Training with gradient accumulation for large effective batch sizes
+- AdamW optimizer with weight decay for specific parameter groups
+- Learning rate scheduling with linear warmup and cosine decay
 
 ## Requirements
 
@@ -66,43 +69,41 @@ Supports multi-turn conversation within the context window (block_size=1024).
 
 ## Training
 
-- DataPreprocessor class to load, encode and batch text data
-- Epoch-based training over the entire dataset
-- Progress bar via tqdm showing batch-level loss
-- AdamW optimizer for model parameter updates
+The DataManager class handles loading, tokenizing, and batching text data, with support for gradient accumulation to simulate large batch sizes. The training loop includes a validation phase, progress tracking with tqdm, and a custom learning rate schedule.
 
 Example Usage:
 
 ```bash
-from train import DataPreprocessor
+from train import DataManager
 from model import GPT, Config
 import torch
-from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-data = DataPreprocessor("datasets/moby_dick.txt", B=4, T=32)
-model = GPT(Config()).to(device)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-num_epochs = 5
-batches_per_epoch = len(data.train_tokens) // (data.B * data.T)
+# Initialize data loader with gradient accumulation
+data = TextDataLoader("datasets/moby_dick.txt", batch_size=4, seq_length=32, total_batch_size=524288)
 
-for epoch in range(1, num_epochs + 1):
-    epoch_loss = 0.0
-    progress_bar = tqdm(range(batches_per_epoch), desc=f"Epoch {epoch}/{num_epochs}", leave=True)
-    for step in progress_bar:
-        x, y = data.next_batch()
-        x, y = x.to(device), y.to(device)
-        optimizer.zero_grad()
-        logits, loss = model(x, y)
-        loss.backward()
-        optimizer.step()
-        epoch_loss += loss.item()
-        progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
-    avg_loss = epoch_loss / batches_per_epoch
-    print(f"Epoch {epoch} finished | Avg loss: {avg_loss:.4f}")
+# Initialize model and optimizer
+model = GPT(Config(vocab_size=50304)).to(device)
+model = torch.compile(model)  # Optional: speeds up training
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+
+# Train for 1 epoch
+data.train(optimizer, model, num_epochs=1)
 
 ```
+
+## Training Features
+
+- DataManager:Loads and tokenizes text (using tiktoken GPT-2 encoding), splits into train/validation sets, and generates batches.
+- Gradient Accumulation: Simulates a large batch size (524,288 tokens) using micro-batches (batch_size=4, seq_length=32).
+- Optimizer: AdamW with weight decay (0.1 for 2D+ parameters, 0.0 for 1D parameters) and fused mode on CUDA.
+- Learning Rate: Per-epoch linear warmup and cosine decay schedule.
+- Progress Tracking: tqdm progress bar showing batch loss, gradient norm, learning rate, and timing.
+- Validation: Computes average validation loss after each epoch.
 
 ## Configuration
 
@@ -118,8 +119,9 @@ n_embd: 768
 
 ## TODO
 
-- Implement Validation Loop after each epoch
 - Add checkpoint saving/loading
+- Implement RoPE (Rotary Position Embeddings)
+- Implement KV (Key-Value) caching for efficient inference
 
 ## Contributing
 
