@@ -100,7 +100,7 @@ data.train(optimizer, model, num_epochs=1)
 
 - DataManager:Loads and tokenizes text (using tiktoken GPT-2 encoding), splits into train/validation sets, and generates batches.
 - Gradient Accumulation: Simulates a large batch size (524,288 tokens) using micro-batches (batch_size=4, seq_length=32).
-- Optimizer: AdamW with weight decay (0.1 for 2D+ parameters, 0.0 for 1D parameters) and fused mode on CUDA.
+- Optimizer: AdamW with weight decay and fused mode on CUDA.
 - Learning Rate: Per-epoch linear warmup and cosine decay schedule.
 - Progress Tracking: tqdm progress bar showing batch loss, gradient norm, learning rate, and timing.
 - Validation: Computes average validation loss after each epoch.
