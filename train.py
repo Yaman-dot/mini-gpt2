@@ -16,7 +16,9 @@ class DataPreprocessor:
         self.train_tokens = self.tokens[:split]
         self.val_tokens = self.tokens[split:]
 
-        self.current_position = 0
+        #self.current_position = 0
+        self.train_position = 0
+        self.val_position = 0
         print(f"Loaded {n} tokens")
         print(f"1 epoch = {n // (B*T)} batches")
 
@@ -31,19 +33,28 @@ class DataPreprocessor:
     def encode_text(self, text):
         return torch.tensor(self.enc.encode(text), dtype=torch.long)
 
-    def next_batch(self, split="train"):
-        data = self.train_tokens if split == "train" else self.val_tokens
-        start = self.current_position
+    def _get_batch(self, data, position_ref):
+        data_len = len(data)
+        if position_ref[0] + self.B * self.T + 1 > data_len:
+            position_ref[0] = 0
+        
+        start = position_ref[0]
         end = start + self.B * self.T + 1
-        if end >= len(data):
-            self.current_position = 0
-            start, end = 0, self.B * self.T + 1
+        
         buf = data[start:end]
         x = buf[:-1].view(self.B, self.T)
         y = buf[1:].view(self.B, self.T)
-        self.current_position += self.B * self.T
+        
+        position_ref[0] += self.B * self.T
         return x, y
-    def get_lr(it, warmup_steps=10, max_lr=1e-4, min_lr=1e-5, max_steps=50):
+
+    def next_train_batch(self):
+        return self._get_batch(self.train_tokens, [self.train_position])
+
+    def next_val_batch(self):
+        return self._get_batch(self.val_tokens, [self.val_position])
+    @staticmethod
+    def get_lr(it, warmup_steps=10, max_lr=6e-4, min_lr=6e-5, max_steps=50):
         # 1) linear warmup for warmup_iters steps
         if it < warmup_steps:
             return max_lr * (it+1) / warmup_steps
@@ -56,28 +67,31 @@ class DataPreprocessor:
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
         return min_lr + coeff * (max_lr - min_lr)
     def train(self, optimizer, model, num_epochs):
+        batches_per_epoch = len(data.train_tokens) // (data.B * data.T)
         for epoch in range(1, num_epochs + 1):
             epoch_loss = 0.0
-            batches_per_epoch = len(data.train_tokens) // (data.B * data.T)
             # tqdm progress bar for each epoch
             progress_bar = tqdm(range(batches_per_epoch), desc=f"Epoch {epoch}/{num_epochs}", leave=True)
 
             epoch_start_time = time.time()  # Start timing for epoch
             for step in progress_bar:
                 batch_start_time = time.time()
-                x, y = data.next_batch(split="train")
+                x, y = self.next_train_batch()
                 if torch.cuda.is_available():
                     x, y = x.to(device), y.to(device)
 
                 optimizer.zero_grad() #Zeros the gradiants, really important
 
-                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                if torch.cuda.is_available():
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        logits, loss = model(x, y)
+                else:
                     logits, loss = model(x, y)
 
                 loss.backward() #Adds to the gradiants that were already zeroed. which is why zeroing is important.
                 norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) #Clip the gradiants to avoid exploding gradiants. 
                 
-                lr = self.get_lr(epoch * batches_per_epoch + step)
+                lr = self.get_lr(step)
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = lr
                 optimizer.step() #Updates the parameters.
@@ -88,7 +102,7 @@ class DataPreprocessor:
                 # accumulate loss for reporting
                 epoch_loss += loss.item()
                 # update progress bar with current batch loss
-                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "norm": f"{norm:.4f}", "ms": f"{batch_time:.2f}"})
+                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "norm": f"{norm:.4f}", "lr": f"{lr:.4f}", "ms": f"{batch_time:.2f}"})
             
             epoch_time = (time.time() - epoch_start_time) * 1000  # Convert to ms
             # average epoch loss
@@ -99,11 +113,12 @@ class DataPreprocessor:
             # Validation loop
             model.eval()
             val_loss = 0.0
-            val_batches = len(self.val_tokens) // (self.B * self.T)
+            val_batches = max(1, len(self.val_tokens) // (self.B * self.T))
             with torch.no_grad():
                 for _ in range(val_batches):
-                    x, y = self.next_batch(split="val")
-                    x, y = x.to(device), y.to(device)
+                    x, y = self.next_val_batch()
+                    if torch.cuda.is_available():
+                        x, y = x.to(device), y.to(device)
                     _, loss = model(x, y)
                     val_loss += loss.item()
             avg_val_loss = val_loss / val_batches
