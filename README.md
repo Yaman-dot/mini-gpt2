@@ -84,7 +84,7 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(42)
 
 # Initialize data loader with gradient accumulation
-data = TextDataLoader("datasets/moby_dick.txt", batch_size=4, seq_length=32, total_batch_size=524288)
+data = DataManager("datasets/moby_dick.txt", batch_size=4, seq_length=32, total_batch_size=524288)
 
 # Initialize model and optimizer
 model = GPT(Config(vocab_size=50304)).to(device)
