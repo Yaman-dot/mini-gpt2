@@ -1,8 +1,10 @@
 from model import GPT, Config
+import os
+os.environ["TORCHINDUCTOR_CACHE_DIR"] = ""
 import torch
 import tiktoken
 from tqdm import tqdm
-
+import time
 class DataPreprocessor:
     def __init__(self, file_path, B, T, train_ratio=0.9):
         self.B = B
@@ -20,9 +22,13 @@ class DataPreprocessor:
         print(f"1 epoch = {n // (B*T)} batches")
 
     def load_data(self, file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
-
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Error: File {file_path} not found.")
+        except Exception as e:
+            raise Exception(f"Error reading file {file_path}: {str(e)}")
     def encode_text(self, text):
         return torch.tensor(self.enc.encode(text), dtype=torch.long)
 
@@ -38,34 +44,69 @@ class DataPreprocessor:
         y = buf[1:].view(self.B, self.T)
         self.current_position += self.B * self.T
         return x, y
+    def train(self, optimizer, model, num_epochs):
+        for epoch in range(1, num_epochs + 1):
+            epoch_loss = 0.0
+            batches_per_epoch = len(data.train_tokens) // (data.B * data.T)
+            # tqdm progress bar for each epoch
+            progress_bar = tqdm(range(batches_per_epoch), desc=f"Epoch {epoch}/{num_epochs}", leave=True)
+
+            epoch_start_time = time.time()  # Start timing for epoch
+            for step in progress_bar:
+                batch_start_time = time.time()
+                x, y = data.next_batch(split="train")
+                if torch.cuda.is_available():
+                    x, y = x.to(device), y.to(device)
+
+                optimizer.zero_grad() #Zeros the gradiants, really important
+
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    logits, loss = model(x, y)
+
+                loss.backward() #Adds to the gradiants that were already zeroed. which is why zeroing is important.
+                optimizer.step() #Updates the parameters.
+
+                batch_time = (time.time() - batch_start_time) * 1000
+
+                # accumulate loss for reporting
+                epoch_loss += loss.item()
+                # update progress bar with current batch loss
+                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "ms": f"{batch_time:.2f}"})
+            
+            epoch_time = (time.time() - epoch_start_time) * 1000  # Convert to ms
+            # average epoch loss
+            avg_loss = epoch_loss / batches_per_epoch
+            #print(f"Epoch {epoch} finished | Avg loss: {avg_loss:.4f}")
+
+
+            # Validation loop
+            model.eval()
+            val_loss = 0.0
+            val_batches = len(self.val_tokens) // (self.B * self.T)
+            with torch.no_grad():
+                for _ in range(val_batches):
+                    x, y = self.next_batch(split="val")
+                    x, y = x.to(device), y.to(device)
+                    _, loss = model(x, y)
+                    val_loss += loss.item()
+            avg_val_loss = val_loss / val_batches
+            print(f"Epoch {epoch} completed in {epoch_time:.2f} | Avg train loss: {avg_loss:.4f} | Avg val loss: {avg_val_loss:.4f}")
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
 data = DataPreprocessor("datasets/moby_dick.txt", B=4, T=32)
-model = GPT(Config()).to(device)
 
+torch.set_float32_matmul_precision("high") #matrix multiplications will use tensorfloat 32
+
+model = GPT(Config()).to(device)
+#model = torch.compile(model) #cost compilation time, but it will make the training faster
+#for now the torch.compile gives me an error because it cant override files in its cache dir.
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 num_epochs = 5
-batches_per_epoch = len(data.train_tokens) // (data.B * data.T)
 
-for epoch in range(1, num_epochs + 1):
-    epoch_loss = 0.0
+data.train(optimizer, model, 1)
 
-    # tqdm progress bar for each epoch
-    progress_bar = tqdm(range(batches_per_epoch), desc=f"Epoch {epoch}/{num_epochs}", leave=True)
-
-    for step in progress_bar:
-        x, y = data.next_batch(split="train")
-        x, y = x.to(device), y.to(device)
-
-        optimizer.zero_grad() #Zeros the gradiants, really important
-        logits, loss = model(x, y)
-        loss.backward() #Adds to the gradiants that were already zeroed. which is why zeroing is important.
-        optimizer.step() #Updates the parameters.
-        # accumulate loss for reporting
-        epoch_loss += loss.item()
-        # update progress bar with current batch loss
-        progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
-    # average epoch loss
-    avg_loss = epoch_loss / batches_per_epoch
-    print(f"Epoch {epoch} finished | Avg loss: {avg_loss:.4f}")
