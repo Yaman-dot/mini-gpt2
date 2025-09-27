@@ -24,10 +24,13 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B,T,self.n_head,C // self.n_head).transpose(1,2) # (B,nh,T,hs)
 
         #attention 
-        att = (q @ k.transpose(-2,-1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) #mask out future tokens
-        att = F.softmax(att, dim=-1) #(B,nh,T,T). Normalize the attention to 1.
-        y = att @ v #(B,nh,T,hs) Weighted sum of the tokens we find interesting.
+        #att = (q @ k.transpose(-2,-1)) * (1.0 / math.sqrt(k.size(-1)))
+        #att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) #mask out future tokens
+        #att = F.softmax(att, dim=-1) #(B,nh,T,T). Normalize the attention to 1.
+        #y = att @ v #(B,nh,T,hs) Weighted sum of the tokens we find interesting.
+        
+        #Implement flash attention which is faster.
+        y = F.scaled_dot_product_attention(q,k,v, is_causal=True) #(B,nh,T,hs) Weighted sum of the tokens we find interesting. 
         y = y.transpose(1,2).contiguous().view(B,T,C) #(B,T,C) reassembling all head outputs, as in concatenations. 
         y = self.c_proj(y) #(B,T,C)
         return y
