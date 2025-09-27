@@ -1,6 +1,5 @@
 from model import GPT, Config
-import os
-os.environ["TORCHINDUCTOR_CACHE_DIR"] = ""
+import math
 import torch
 import tiktoken
 from tqdm import tqdm
@@ -44,6 +43,18 @@ class DataPreprocessor:
         y = buf[1:].view(self.B, self.T)
         self.current_position += self.B * self.T
         return x, y
+    def get_lr(it, warmup_steps=10, max_lr=1e-4, min_lr=1e-5, max_steps=50):
+        # 1) linear warmup for warmup_iters steps
+        if it < warmup_steps:
+            return max_lr * (it+1) / warmup_steps
+        # 2) if it > lr_decay_iters, return min learning rate
+        if it > max_steps:
+            return min_lr
+        # 3) in between, use cosine decay down to min_lr
+        decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+        assert 0 <= decay_ratio <= 1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+        return min_lr + coeff * (max_lr - min_lr)
     def train(self, optimizer, model, num_epochs):
         for epoch in range(1, num_epochs + 1):
             epoch_loss = 0.0
@@ -64,14 +75,20 @@ class DataPreprocessor:
                     logits, loss = model(x, y)
 
                 loss.backward() #Adds to the gradiants that were already zeroed. which is why zeroing is important.
+                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) #Clip the gradiants to avoid exploding gradiants. 
+                
+                lr = self.get_lr(epoch * batches_per_epoch + step)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr
                 optimizer.step() #Updates the parameters.
 
+                torch.cuda.synchronize() if torch.cuda.is_available() else None
                 batch_time = (time.time() - batch_start_time) * 1000
 
                 # accumulate loss for reporting
                 epoch_loss += loss.item()
                 # update progress bar with current batch loss
-                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "ms": f"{batch_time:.2f}"})
+                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "norm": f"{norm:.4f}", "ms": f"{batch_time:.2f}"})
             
             epoch_time = (time.time() - epoch_start_time) * 1000  # Convert to ms
             # average epoch loss
@@ -102,10 +119,10 @@ data = DataPreprocessor("datasets/moby_dick.txt", B=4, T=32)
 
 torch.set_float32_matmul_precision("high") #matrix multiplications will use tensorfloat 32
 
-model = GPT(Config()).to(device)
+model = GPT(Config(vocab_size=50304)).to(device)
 #model = torch.compile(model) #cost compilation time, but it will make the training faster
 #for now the torch.compile gives me an error because it cant override files in its cache dir.
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 num_epochs = 5
 
 data.train(optimizer, model, 1)
