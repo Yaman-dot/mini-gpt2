@@ -16,14 +16,24 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
-    def forward(self, x):
+    def forward(self, x, past_kvs = None):
         B,T,C = x.size() #Batch,Time,Channel
         #nh is number of head, hs is head size and c is the number of channels = nh*hs, for gpt 2, n_head = 12, hs=64, c = 12*64=768 channels in the transformer.
+        nh = self.n_head
+        hs = C // nh
+        
+        
         q,k,v = self.c_attn(x).split(self.n_embd, dim=2) #split into 3 tensors along the channel dimension
-        k = k.view(B,T,self.n_head,C // self.n_head).transpose(1,2) # (B,nh,T,hs) treats h as a batch same as k
-        q = q.view(B,T,self.n_head,C // self.n_head).transpose(1,2) # (B,nh,T,hs)
-        v = v.view(B,T,self.n_head,C // self.n_head).transpose(1,2) # (B,nh,T,hs)
-
+        k = k.view(B,T,nh,hs).transpose(1,2) # (B,nh,T,hs) treats h as a batch same as k
+        q = q.view(B,T,nh,hs).transpose(1,2) # (B,nh,T,hs)
+        v = v.view(B,T,nh,hs).transpose(1,2) # (B,nh,T,hs)
+        
+        if past_kvs is not None:
+            past_k, past_v = past_kvs
+            k = torch.cat([past_k, k], dim=2) # (B, nh, T_Past+T, hs)
+            v = torch.cat([past_v, v], dim=2)
+        
+        
         #attention 
         #att = (q @ k.transpose(-2,-1)) * (1.0 / math.sqrt(k.size(-1)))
         #att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) #mask out future tokens
@@ -34,7 +44,7 @@ class CausalSelfAttention(nn.Module):
         y = F.scaled_dot_product_attention(q,k,v, is_causal=True) #(B,nh,T,hs) Weighted sum of the tokens we find interesting. 
         y = y.transpose(1,2).contiguous().view(B,T,C) #(B,T,C) reassembling all head outputs, as in concatenations. 
         y = self.c_proj(y) #(B,T,C)
-        return y
+        return y, (k,v)
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -54,7 +64,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
-    def forward(self, x):
+    def forward(self, x, past_kvs=None):
+        attn_out, new_kv = self.attn(self.ln_1(x), past_kvs=past_kvs)
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x)) #FFN
         return x
@@ -96,7 +107,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, past_kvs=None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward {T}, model block size is exhausted."
 
@@ -104,18 +115,23 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (B,T,n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape  (T, n_embd)
         x = tok_emb + pos_emb # (B,T,n_embd)
-        for block in self.transformer.h:
-            x = block(x)
+        
+        list_new_kvs = []
+        for i, block in enumerate(self.transformer.h):
+            past_kv = past_kv[i] if past_kvs is not None else None
+            x, new_kv = block(x, past_kv=past_kv)
+            list_new_kvs.append(new_kv)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
-        return logits, loss
+        return logits, loss, list_new_kvs
     def generate(self, idx, max_new_tokens=50, top_k=50):
         self.eval()
+        past_kvs = None
         for _ in range(max_new_tokens):
-            logits, _ = self(idx)              # (B, T, vocab_size)
+            logits, _, past_kvs = self(idx[:, -1:], past_kvs = past_kvs)             #only feed last token
             logits = logits[:, -1, :]       # (B, vocab_size)
             probs = F.softmax(logits, dim=-1)
             top_probs, top_idx = torch.topk(probs, top_k, dim=-1)
