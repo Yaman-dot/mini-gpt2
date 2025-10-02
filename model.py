@@ -64,11 +64,11 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
-    def forward(self, x, past_kvs=None):
-        attn_out, new_kv = self.attn(self.ln_1(x), past_kvs=past_kvs)
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x)) #FFN
-        return x
+    def forward(self, x, past_kv=None):
+        attn_out, new_kv = self.attn(self.ln_1(x), past_kvs=past_kv)
+        x = x + attn_out
+        x = x + self.mlp(self.ln_2(x))
+        return x, new_kv
 @dataclass
 class Config:
     block_size: int = 1024
@@ -118,9 +118,10 @@ class GPT(nn.Module):
         
         list_new_kvs = []
         for i, block in enumerate(self.transformer.h):
-            past_kv = past_kv[i] if past_kvs is not None else None
-            x, new_kv = block(x, past_kv=past_kv)
+            past_kv = past_kvs[i] if past_kvs is not None else None  # extract this block's past
+            x, new_kv = block(x, past_kv=past_kv)  # <-- use past_kv, not past_kvs
             list_new_kvs.append(new_kv)
+
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
         loss = None
